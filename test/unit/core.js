@@ -1019,6 +1019,34 @@ test("jQuery.extend(Object, Object)", function() {
 	deepEqual( options2, options2Copy, "Check if not modified: options2 must not be modified" );
 });
 
+test( "jQuery.extend( true, ... ) Object.prototype pollution", function() {
+	expect( 1 );
+
+	jQuery.extend( true, {}, JSON.parse( "{\"__proto__\": {\"devMode\": true}}" ) );
+	ok( !( "devMode" in {} ), "Object.prototype not polluted" );
+} );
+
+test( "jQuery.extend( true, ... ) Object.prototype pollution - nested __proto__", function() {
+	expect( 1 );
+
+	jQuery.extend( true, {}, JSON.parse( "{\"a\": {\"__proto__\": {\"devMode\": true}}}" ) );
+	ok( !( "devMode" in {} ), "Object.prototype not polluted" );
+} );
+
+testIframeWithCallback( "jQuery.extend( true, ... ) Object.prototype pollution - bundled jQuery 1.4.2 (speed/jquery-basis.js) and 1.8.2 (data/jquery-1.8.2.ajax_xhr.min.js)", "core/extendProtoPollution.html", function( basis, ajaxXhr ) {
+	expect( 8 );
+
+	strictEqual( basis.version, "1.4.2", "speed/jquery-basis.js is jQuery 1.4.2" );
+	strictEqual( basis.polluted, false, "1.4.2: Object.prototype not polluted" );
+	strictEqual( basis.nestedPolluted, false, "1.4.2: Object.prototype not polluted by a nested __proto__" );
+	strictEqual( basis.deepMerge, true, "1.4.2: deep extend still merges nested objects" );
+
+	strictEqual( ajaxXhr.version.split( " " )[ 0 ], "1.8.2", "data/jquery-1.8.2.ajax_xhr.min.js is jQuery 1.8.2" );
+	strictEqual( ajaxXhr.polluted, false, "1.8.2: Object.prototype not polluted" );
+	strictEqual( ajaxXhr.nestedPolluted, false, "1.8.2: Object.prototype not polluted by a nested __proto__" );
+	strictEqual( ajaxXhr.deepMerge, true, "1.8.2: deep extend still merges nested objects" );
+});
+
 test("jQuery.each(Object,Function)", function() {
 	expect( 23 );
 
