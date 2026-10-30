@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<title>Bundled jQuery copies: &lt;option&gt;/&lt;optgroup&gt; HTML isn't parsed inside a &lt;select&gt; wrapper (gh-4647, CVE-2020-11023)</title>
+	<script src="../../../speed/jquery-basis.js"></script>
+	<script>
+		window.basisjQuery = jQuery.noConflict( true );
+	</script>
+	<script src="../jquery-1.8.2.ajax_xhr.min.js"></script>
+	<script>
+		window.ajaxXhrjQuery = jQuery.noConflict( true );
+	</script>
+</head>
+<body>
+	<script>
+		// Sanitized markup that only becomes dangerous inside a <select> wrapper:
+		// the stray </select> closes the wrapper and the rest is re-parsed.
+		// "xss(#)" is swapped for a per-copy recorder and a per-payload index.
+		var templates = [
+				"<option><style></option></select><img src=url404 onerror=xss(#)></style>",
+				"<optgroup><style></optgroup></select><img src=url404 onerror=xss(#)></style>",
+				"<option><xmp></option></select><img src=url404 onerror=xss(#)></xmp>"
+			],
+			probe = document.createElement( "div" ),
+			basis, ajaxXhr;
+
+		// Support: IE <=9 only
+		// IE <=9 replaces <option> tags with their contents when inserted outside of
+		// the select element, so the select wrapper is still required there.
+		probe.innerHTML = "<option></option>";
+
+		function nodeNames( nodes ) {
+			var names = [],
+				i;
+
+			for ( i = 0; i < nodes.length; i++ ) {
+				names.push( nodes[ i ].nodeName.toLowerCase() );
+			}
+			return names.join( "," );
+		}
+
+		function check( $, name ) {
+			var container, methods, i, j, payload,
+				counter = 0,
+				result = {
+					version: $.fn.jquery,
+					optionParses: !!probe.lastChild,
+					supportOption: $.support.option,
+					hasParseHTML: !!$.parseHTML,
+					payloads: [],
+					executed: []
+				};
+
+			window[ "xss_" + name ] = function( index ) {
+				result.executed.push( result.payloads[ index ] );
+			};
+
+			result.jQueryNodes = nodeNames( $( "<option>a</option></select><b>b</b>" ) );
+			result.htmlChildren = nodeNames( $( "<div></div>" ).html( "<option>a</option></select><b>b</b>" ).children() );
+			result.appendChildren = nodeNames( $( "<div></div>" ).append( "<optgroup label='g'></optgroup></select><b>b</b>" ).children() );
+			if ( $.parseHTML ) {
+				result.parseHTMLNodes = nodeNames( $.parseHTML( "<optgroup label='g'></optgroup></select><b>b</b>" ) );
+			}
+
+			// <option> markup still works where it is meant to go
+			result.selectOptions = $( "<select></select>" ).append( "<option>1</option><option>2</option>" ).children( "option" ).length;
+
+			container = $( "<div></div>" ).appendTo( document.body );
+			methods = [
+				[ "html", function( html ) {
+					$( "<div></div>" ).appendTo( container ).html( html );
+				} ],
+				[ "append", function( html ) {
+					$( "<div></div>" ).appendTo( container ).append( html );
+				} ],
+				[ "prepend", function( html ) {
+					$( "<div></div>" ).appendTo( container ).prepend( html );
+				} ],
+				[ "before", function( html ) {
+					$( "<div></div>" ).appendTo( container ).before( html );
+				} ],
+				[ "after", function( html ) {
+					$( "<div></div>" ).appendTo( container ).after( html );
+				} ],
+				[ "jQuery", function( html ) {
+					$( html );
+				} ]
+			];
+			if ( $.parseHTML ) {
+				methods.push( [ "jQuery.parseHTML", function( html ) {
+					$.parseHTML( html );
+				} ] );
+			}
+
+			for ( i = 0; i < templates.length; i++ ) {
+				for ( j = 0; j < methods.length; j++ ) {
+					payload = templates[ i ].replace( "xss(#)", "xss_" + name + "(" + counter + ")" );
+					result.payloads.push( methods[ j ][ 0 ] + "( " + payload + " )" );
+					methods[ j ][ 1 ]( payload );
+					counter++;
+				}
+			}
+
+			return result;
+		}
+
+		basis = check( window.basisjQuery, "basis" );
+		ajaxXhr = check( window.ajaxXhrjQuery, "ajaxXhr" );
+
+		// Give the url404 images time to fail and fire any injected onerror handler
+		setTimeout(function() {
+			window.parent.iframeCallback( basis, ajaxXhr );
+		}, 1000 );
+	</script>
+</body>
+</html>

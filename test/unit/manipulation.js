@@ -2323,3 +2323,133 @@ testIframeWithCallback( "XHTML-style self-closing non-void tags are not expanded
 	strictEqual( ajaxXhr.explicitChildren, 2, "1.8.2 html(): explicitly closed tags still give two children" );
 	deepEqual( ajaxXhr.executed, [], "1.8.2: no sanitized htmlString executes its payload" );
 });
+
+test( "<option>/<optgroup> HTML isn't parsed inside a <select> wrapper (gh-4647)", function() {
+
+	var div,
+		probe = document.createElement("div");
+
+	// Support: IE <=9 only
+	// IE <=9 replaces <option> tags with their contents when inserted outside of
+	// the select element, so the select wrapper is still required there.
+	probe.innerHTML = "<option></option>";
+	if ( !probe.lastChild ) {
+		expect( 1 );
+		ok( true, "<option> needs a <select> wrapper in this browser" );
+		return;
+	}
+
+	expect( 6 );
+
+	// Inside a <select> wrapper the stray </select> would close the wrapper and
+	// change how the rest of the markup is parsed.
+	div = jQuery("<option>a</option></select><b>b</b>");
+	equal( div.length, 2, "jQuery(): option and its sibling are both created" );
+	equal( div[ 0 ] && div[ 0 ].nodeName.toLowerCase(), "option", "jQuery(): first node is the option" );
+	equal( div[ 1 ] && div[ 1 ].nodeName.toLowerCase(), "b", "jQuery(): second node is the sibling" );
+
+	equal( jQuery.parseHTML("<optgroup label='g'></optgroup></select><b>b</b>").length, 2,
+		"jQuery.parseHTML(): optgroup and its sibling are both created" );
+
+	div = jQuery("<div></div>").html("<option>a</option></select><b>b</b>");
+	equal( div.children().length, 2, "html(): option and its sibling are both created" );
+
+	div = jQuery("<div></div>").append("<optgroup label='g'></optgroup></select><b>b</b>");
+	equal( div.children().length, 2, "append(): optgroup and its sibling are both created" );
+});
+
+test( "Sanitized <option>/<optgroup> HTML doesn't get unsanitized by any manipulation method", function() {
+
+	var container, i, j, payload,
+		counter = 0,
+		executed = {},
+		payloads = [],
+		templates = [
+			"<option><style></option></select><img src=url404 onerror=xss(#)></style>",
+			"<optgroup><style></optgroup></select><img src=url404 onerror=xss(#)></style>",
+			"<option><xmp></option></select><img src=url404 onerror=xss(#)></xmp>"
+		],
+		methods = [
+			[ "html", function( html ) {
+				jQuery("<div></div>").appendTo( container ).html( html );
+			} ],
+			[ "append", function( html ) {
+				jQuery("<div></div>").appendTo( container ).append( html );
+			} ],
+			[ "prepend", function( html ) {
+				jQuery("<div></div>").appendTo( container ).prepend( html );
+			} ],
+			[ "before", function( html ) {
+				jQuery("<div></div>").appendTo( container ).before( html );
+			} ],
+			[ "after", function( html ) {
+				jQuery("<div></div>").appendTo( container ).after( html );
+			} ],
+			[ "jQuery", function( html ) {
+				jQuery( html );
+			} ],
+			[ "jQuery.parseHTML", function( html ) {
+				jQuery.parseHTML( html );
+			} ]
+		];
+
+	expect( templates.length * methods.length );
+
+	Globals.register("xss");
+	window.xss = function( index ) {
+		executed[ index ] = true;
+	};
+
+	container = jQuery("<div></div>").appendTo("#qunit-fixture");
+
+	for ( i = 0; i < templates.length; i++ ) {
+		for ( j = 0; j < methods.length; j++ ) {
+			payload = templates[ i ].replace( "#", counter );
+			payloads.push( methods[ j ][ 0 ] + "( " + payload + " )" );
+			methods[ j ][ 1 ]( payload );
+			counter++;
+		}
+	}
+
+	stop();
+	setTimeout(function() {
+		for ( i = 0; i < payloads.length; i++ ) {
+			ok( !executed[ i ], "Payload #" + i + " isn't executed: " + payloads[ i ] );
+		}
+		start();
+	}, 1000 );
+});
+
+testIframeWithCallback( "<option>/<optgroup> HTML isn't parsed inside a <select> wrapper - bundled jQuery 1.4.2 (speed/jquery-basis.js) and 1.8.2 (data/jquery-1.8.2.ajax_xhr.min.js) (gh-4647)", "manipulation/optionWrapBundled.html", function( basis, ajaxXhr ) {
+	expect( 16 );
+
+	strictEqual( basis.version, "1.4.2", "speed/jquery-basis.js is jQuery 1.4.2" );
+	strictEqual( ajaxXhr.version.split( " " )[ 0 ], "1.8.2", "data/jquery-1.8.2.ajax_xhr.min.js is jQuery 1.8.2" );
+	strictEqual( ajaxXhr.hasParseHTML, true, "1.8.2 has jQuery.parseHTML" );
+
+	jQuery.each( [ [ "1.4.2", basis ], [ "1.8.2", ajaxXhr ] ], function( i, copy ) {
+		var label = copy[ 0 ],
+			result = copy[ 1 ];
+
+		strictEqual( result.supportOption, result.optionParses,
+			label + ": jQuery.support.option tells whether a bare <option> parses outside a <select>" );
+
+		// Support: IE <=9 only
+		// The select wrapper is still required where a bare <option> doesn't parse.
+		if ( result.optionParses ) {
+			strictEqual( result.jQueryNodes, "option,b", label + " jQuery(): option and its sibling are both created" );
+			strictEqual( result.htmlChildren, "option,b", label + " html(): option and its sibling are both created" );
+			strictEqual( result.appendChildren, "optgroup,b", label + " append(): optgroup and its sibling are both created" );
+		} else {
+			ok( true, label + ": <option> needs a <select> wrapper in this browser" );
+			ok( true, label + ": <option> needs a <select> wrapper in this browser" );
+			ok( true, label + ": <option> needs a <select> wrapper in this browser" );
+		}
+
+		strictEqual( result.selectOptions, 2, label + " append(): <option> markup still lands in a <select>" );
+		deepEqual( result.executed, [], label + ": no sanitized <option>/<optgroup> payload is executed" );
+	});
+
+	strictEqual( ajaxXhr.parseHTMLNodes, ajaxXhr.optionParses ? "optgroup,b" : ajaxXhr.parseHTMLNodes,
+		"1.8.2 jQuery.parseHTML(): optgroup and its sibling are both created" );
+});

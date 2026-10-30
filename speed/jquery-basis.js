@@ -933,6 +933,12 @@ function now() {
 	// WebKit doesn't clone checked state correctly in fragments
 	jQuery.support.checkClone = fragment.cloneNode(true).cloneNode(true).lastChild.checked;
 
+	// Support: IE <=9 only
+	// IE <=9 replaces <option> tags with their contents when inserted outside of
+	// the select element.
+	div.innerHTML = "<option></option>";
+	jQuery.support.option = !!div.lastChild;
+
 	// Figure out if the W3C box model works as expected
 	// document.body must exist before we can do this
 	jQuery(function() {
@@ -3963,7 +3969,6 @@ var rinlinejQuery = / jQuery\d+="(?:\d+|null)"/g,
 	rnocache = /<script|<object|<embed|<option|<style/i,
 	rchecked = /checked\s*(?:[^=]|=\s*.checked.)/i,  // checked="checked" or checked (html5)
 	wrapMap = {
-		option: [ 1, "<select multiple='multiple'>", "</select>" ],
 		legend: [ 1, "<fieldset>", "</fieldset>" ],
 		thead: [ 1, "<table>", "</table>" ],
 		tr: [ 2, "<table><tbody>", "</tbody></table>" ],
@@ -3973,9 +3978,15 @@ var rinlinejQuery = / jQuery\d+="(?:\d+|null)"/g,
 		_default: [ 0, "", "" ]
 	};
 
-wrapMap.optgroup = wrapMap.option;
 wrapMap.tbody = wrapMap.tfoot = wrapMap.colgroup = wrapMap.caption = wrapMap.thead;
 wrapMap.th = wrapMap.td;
+
+// Support: IE <=9 only
+// IE <=9 replaces <option> tags with their contents when inserted outside of
+// the select element.
+if ( !jQuery.support.option ) {
+	wrapMap.optgroup = wrapMap.option = [ 1, "<select multiple='multiple'>", "</select>" ];
+}
 
 // IE can't serialize <link> and <script> tags normally
 if ( !jQuery.support.htmlSerialize ) {
