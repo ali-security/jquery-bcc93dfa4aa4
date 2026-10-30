@@ -1845,6 +1845,45 @@ module( "ajax", {
 		});
 	});
 
+	asyncTest( "jQuery.fn.load( URL_SELECTOR ) - does not execute scripts (CVE-2020-7656)", 2, function() {
+		jQuery._loadSelectorScriptRan = false;
+		jQuery("#first").load( "data/test_load_scripts.html div.user", function() {
+			strictEqual( jQuery( this ).children("div").length, 1, "Verify that specific elements were injected" );
+			ok( !jQuery._loadSelectorScriptRan, "Verify that scripts were not executed" );
+			delete jQuery._loadSelectorScriptRan;
+			start();
+		});
+	});
+
+	// The bundled jQuery copies shipped in the package must not run the scripts of
+	// a .load( "url selector" ) response either; their old script-stripping regexes
+	// miss end tags such as "</script >" (CVE-2020-7656)
+	testIframeWithCallback( "jQuery.fn.load( URL_SELECTOR ) - does not execute scripts - bundled jQuery 1.4.2 (speed/jquery-basis.js), 1.8.2 (data/jquery-1.8.2.ajax_xhr.min.js) and dist/jquery.min.js (CVE-2020-7656)", "ajax/loadScriptsBundled.html", function( basis, ajaxXhr, main ) {
+		expect( 24 );
+
+		jQuery.each( [
+			[ basis, "1.4.2", "speed/jquery-basis.js" ],
+			[ ajaxXhr, "1.8.2", "data/jquery-1.8.2.ajax_xhr.min.js" ],
+			[ main, "1.9.1", "dist/jquery.min.js" ]
+		], function( i, copy ) {
+			var result = copy[ 0 ],
+				version = copy[ 1 ],
+				outcomes = jQuery.map( result.outcomes, function( outcome, name ) {
+					return name + " => " + outcome;
+				}).join( "; " );
+
+			// The 1.8.2 version string includes its module list
+			strictEqual( result.version.split( " " )[ 0 ], version, copy[ 2 ] + " is jQuery " + version );
+			deepEqual( result.executed, [], version + ": no script of a .load( \"url selector\" ) response ran" );
+			deepEqual( result.notInjected, [], version + ": the selected element was injected for every response (" + outcomes + ")" );
+			strictEqual( result.scriptsInjected, 0, version + ": no script element was injected" );
+			strictEqual( result.servedFileRan, false, version + ": the script of data/test_load_scripts.html did not run" );
+			strictEqual( result.servedFileInjected, 1, version + ": the selected element of data/test_load_scripts.html was injected" );
+			strictEqual( result.selected, "2 user, 0 teacher", version + ": only the elements matching the selector are injected" );
+			strictEqual( result.controlFired, true, version + ": without a selector the full response is injected and its script runs, by design (control)" );
+		});
+	});
+
 	asyncTest( "jQuery.fn.load( String, Function ) - simple: inject text into DOM", 2, function() {
 		jQuery("#first").load( url("data/name.html"), function() {
 			ok( /^ERROR/.test(jQuery("#first").text()), "Check if content was injected into the DOM" );

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<title>Bundled jQuery copies: .load( "url selector" ) does not run the scripts of the response (CVE-2020-7656)</title>
+	<script src="../../../speed/jquery-basis.js"></script>
+	<script>
+		window.basisjQuery = jQuery.noConflict( true );
+	</script>
+	<script src="../jquery-1.8.2.ajax_xhr.min.js"></script>
+	<script>
+		window.ajaxXhrjQuery = jQuery.noConflict( true );
+	</script>
+	<script src="../../../dist/jquery.min.js"></script>
+	<script>
+		window.mainjQuery = jQuery.noConflict( true );
+	</script>
+</head>
+<body>
+	<div id="load-target"></div>
+	<script>
+		// The script of data/test_load_scripts.html flags window.jQuery; the
+		// responses below report through loadXss( index ) instead.
+		window.jQuery = {};
+
+		var user = "<div class=\"user\">This is a user</div>",
+			// Responses whose script the old script-stripping regexes miss (or
+			// rebuild); "js" is swapped for a per-response recorder call. End tags
+			// are written as "<\/" so they do not close this inline script.
+			attacks = [
+				[ "end tag with a trailing space ( <\/script > )", function( js ) {
+					return user + "<script type=\"text/javascript\">" + js + "<\/script >";
+				} ],
+				[ "end tag with a trailing newline", function( js ) {
+					return user + "<script>" + js + "<\/script\n>";
+				} ],
+				[ "upper-case tags, end tag with a trailing tab", function( js ) {
+					return user + "<SCRIPT>" + js + "<\/SCRIPT\t>";
+				} ],
+				[ "end tag with an attribute", function( js ) {
+					return user + "<script>" + js + "<\/script data-x=\"1\">";
+				} ],
+				[ "script inside the selected element", function( js ) {
+					return "<div class=\"user\">This is a user<script>" + js + "<\/script ></div>";
+				} ],
+				[ "script rebuilt by stripping an inner <script><\/script>", function( js ) {
+					return user + "<scr<script><\/script>ipt>" + js + "<\/script>";
+				} ]
+			],
+			copies = [
+				[ "basis", window.basisjQuery ],
+				[ "ajaxXhr", window.ajaxXhrjQuery ],
+				[ "main", window.mainjQuery ]
+			],
+			results = {},
+			current;
+
+		window.loadXss = function( index ) {
+			if ( index === attacks.length ) {
+				current.controlFired = true;
+			} else {
+				current.executed.push( attacks[ index ][ 0 ] );
+			}
+		};
+
+		function recorder( index ) {
+			return "loadXss(" + index + ");";
+		}
+
+		// Fake transport answering every request with the given text/html response,
+		// synchronously, so no server is needed for the crafted responses
+		function respondWith( $, responseText ) {
+			$.ajaxSetup({
+				xhr: function() {
+					var xhr = {
+						readyState: 0,
+						status: 0,
+						statusText: "",
+						responseText: "",
+						open: function() {},
+						setRequestHeader: function() {},
+						abort: function() {},
+						getAllResponseHeaders: function() {
+							return "Content-Type: text/html\r\n";
+						},
+						getResponseHeader: function( name ) {
+							return name.toLowerCase() === "content-type" ? "text/html" : null;
+						},
+						send: function() {
+							xhr.readyState = 4;
+							xhr.status = 200;
+							xhr.statusText = "OK";
+							xhr.responseText = responseText;
+						}
+					};
+					return xhr;
+				}
+			});
+		}
+
+		function count( $target, selector ) {
+			return $target.find( selector ).length;
+		}
+
+		function check( $, name, done ) {
+			var i, injected,
+				$target = $( "#load-target" ),
+				realXhr = $.ajaxSettings.xhr,
+				result = current = results[ name ] = {
+					version: $.fn.jquery,
+					executed: [],
+					notInjected: [],
+					outcomes: {},
+					scriptsInjected: 0,
+					controlFired: false
+				};
+
+			$.ajaxSetup({ async: false, global: false });
+
+			for ( i = 0; i < attacks.length; i++ ) {
+				respondWith( $, attacks[ i ][ 1 ]( recorder( i ) ) );
+				$target.empty();
+				try {
+					$target.load( "payload.html div.user" );
+					injected = count( $target, "div.user" );
+					result.outcomes[ attacks[ i ][ 0 ] ] = injected + " div.user";
+					if ( injected !== 1 ) {
+						result.notInjected.push( attacks[ i ][ 0 ] );
+					}
+					result.scriptsInjected += count( $target, "script" );
+				} catch ( e ) {
+					result.outcomes[ attacks[ i ][ 0 ] ] = "threw: " + ( e && e.message || e );
+					result.notInjected.push( attacks[ i ][ 0 ] );
+				}
+			}
+
+			// A selector still picks only the matching elements of the response
+			respondWith( $, user + "<div class=\"user\">Another user</div><div class=\"teacher\">This is a teacher</div>" );
+			$target.empty().load( "payload.html div.user" );
+			result.selected = count( $target, "div.user" ) + " user, " + count( $target, "div.teacher" ) + " teacher";
+
+			// Control: without a selector the full response is injected and its
+			// scripts do run (by design, in every jQuery version). This proves the
+			// payload is live in this browser.
+			respondWith( $, attacks[ 0 ][ 1 ]( recorder( attacks.length ) ) );
+			$target.empty().load( "payload.html" );
+
+			// The reference fixture, served for real (asynchronous request)
+			$.ajaxSetup({ async: true, xhr: realXhr });
+			window.jQuery._loadSelectorScriptRan = false;
+			$target.empty().load( "../test_load_scripts.html div.user", function() {
+				result.servedFileRan = window.jQuery._loadSelectorScriptRan;
+				result.servedFileInjected = count( $target, "div.user" );
+				$target.empty();
+				done();
+			});
+		}
+
+		(function next( i ) {
+			if ( i === copies.length ) {
+				window.parent.iframeCallback( results.basis, results.ajaxXhr, results.main );
+				return;
+			}
+			check( copies[ i ][ 1 ], copies[ i ][ 0 ], function() {
+				// Leave the request stack of the finished copy before the next one
+				setTimeout(function() {
+					next( i + 1 );
+				}, 0 );
+			});
+		})( 0 );
+	</script>
+</body>
+</html>

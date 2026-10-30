@@ -4767,7 +4767,6 @@ if ( jQuery.expr && jQuery.expr.filters ) {
 	};
 }
 var jsc = now(),
-	rscript = /<script(.|\s)*?\/script>/gi,
 	rselectTextarea = /select|textarea/i,
 	rinput = /color|date|datetime|email|hidden|month|number|password|range|search|tel|text|time|url|week/i,
 	jsre = /=\?(&|$)/,
@@ -4824,18 +4823,24 @@ jQuery.fn.extend({
 			complete: function( res, status ) {
 				// If successful, inject the HTML into all the matched elements
 				if ( status === "success" || status === "notmodified" ) {
+					var fragment;
+
 					// See if a selector was specified
+					if ( selector ) {
+						// Parse the response into a fragment without its scripts:
+						// jQuery.clean moves every script (nested ones included) into
+						// the discarded scripts array, so none of them is ever run.
+						// A regex cannot strip them reliably (e.g. "</script >")
+						fragment = document.createDocumentFragment();
+						jQuery.clean( [ res.responseText ], document, fragment, [] );
+					}
+
 					self.html( selector ?
-						// Create a dummy div to hold the results
-						jQuery("<div />")
-							// inject the contents of the document in, removing the scripts
-							// to avoid any 'Permission Denied' errors in IE
-							.append(res.responseText.replace(rscript, ""))
+						// If a selector was specified, locate the right elements in a dummy div
+						// Exclude scripts to avoid IE 'Permission Denied' errors
+						jQuery("<div />").append( fragment ).find(selector) :
 
-							// Locate the specified elements
-							.find(selector) :
-
-						// If not, just inject the full result
+						// Otherwise use the full result
 						res.responseText );
 				}
 
