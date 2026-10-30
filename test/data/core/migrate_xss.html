@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<title>jQuery Migrate leading-hash HTML XSS (sonatype-2013-0003)</title>
+	<script src="../../../dist/jquery.min.js"></script>
+	<script>
+		// Keep the console quiet; warnings are still recorded in jQuery.migrateWarnings
+		jQuery.migrateMute = true;
+		window.XSS = false;
+
+		// Load the jQuery Migrate build shipped in the package root;
+		// "?min" selects the minified one
+		document.write( "<script src='../../../jquery-migrate" +
+			( /[?&]min(?:[&=]|$)/.test( window.location.search ) ? ".min" : "" ) +
+			".js'><\/script>" );
+	</script>
+</head>
+<body>
+	<div id="qunit-fixture"></div>
+	<script>
+		var parsed = {},
+			attacks = {},
+			img = "<img src=haha onerror='window.XSS=true' />",
+			script = "<script>window.XSS=true<" + "/script>";
+
+		function parse( name, selector ) {
+			var elems;
+			try {
+				elems = jQuery( selector );
+				parsed[ name ] = elems.length + ":" + ( elems[ 0 ] && elems[ 0 ].nodeName.toLowerCase() );
+				parsed[ name + " text" ] = elems.text();
+			} catch ( e ) {
+				parsed[ name ] = "exception: " + ( e && e.message || e );
+			}
+		}
+
+		function attack( name, fn ) {
+			try {
+				fn();
+				attacks[ name ] = "no exception";
+			} catch ( e ) {
+				attacks[ name ] = e && e.message || String( e );
+			}
+		}
+
+		// Strings that are (or contain) HTML must keep working
+		parse( "simple tag", "<div />" );
+		parse( "embedded hash", "<p>love potion <strong bgcolor='#bad'>#9</strong></p>" );
+		parse( "embedded newlines", "<div>very\nspacey\n<div>like\n</div> text </div></div>" );
+		parse( "lots of space/newline", "  <em>  spaces \n and \n newlines </em> \n " );
+		parse( "trailing text", "<div>try this</div>junk" );
+		parse( "id selector", "#qunit-fixture" );
+
+		// A leading "#" (e.g. $( location.hash )) must never be parsed as HTML
+		attack( "leading hash", function() {
+			jQuery( "#" + img );
+		});
+		attack( "leading hash, document context", function() {
+			jQuery( "#" + img, document );
+		});
+		attack( "leading space and newline before hash", function() {
+			jQuery( " \n#" + script );
+		});
+		attack( "leading whitespace before hash, document context", function() {
+			jQuery( "\t \n#" + img, document );
+		});
+		attack( "leading space before hash, appended to the document", function() {
+			jQuery( " #" + script ).appendTo( "#qunit-fixture" );
+		});
+
+		// Give any injected inline handler the chance to run before reporting
+		setTimeout(function() {
+			window.parent.iframeCallback({
+				migrate: jQuery( "script[src*='jquery-migrate']" ).attr( "src" ) || "",
+				migrateLoaded: typeof jQuery.migrateReset === "function",
+				parsed: parsed,
+				attacks: attacks,
+				warnings: jQuery.migrateWarnings ? jQuery.migrateWarnings.join( "\n" ) : "",
+				xss: window.XSS
+			});
+		}, 1000 );
+	</script>
+</body>
+</html>

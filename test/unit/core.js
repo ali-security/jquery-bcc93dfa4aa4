@@ -1342,6 +1342,50 @@ if ( jQuery.isFunction( document.implementation && document.implementation.creat
 	});
 }
 
+// The jQuery Migrate build shipped in the package root must not treat a string
+// with a leading hash as HTML, not even after leading whitespace (sonatype-2013-0003)
+jQuery.each( [ "jquery-migrate.js", "jquery-migrate.min.js" ], function( i, file ) {
+	testIframeWithCallback( "jQuery Migrate (" + file + ") rejects HTML strings with a leading hash (sonatype-2013-0003)",
+		"core/migrate_xss.html" + ( /\.min\.js$/.test( file ) ? "?min" : "" ),
+		function( result ) {
+			expect( 17 );
+
+			var invalid = "JQMIGRATE: Invalid selector string (XSS)",
+				parsed = {
+					"simple tag": "1:div",
+					"embedded hash": "1:p",
+					"embedded hash text": "love potion #9",
+					"embedded newlines": "1:div",
+					"lots of space/newline": "1:em",
+					"trailing text": "1:div",
+					"id selector": "1:div"
+				},
+				attacks = [
+					"leading hash",
+					"leading hash, document context",
+					"leading space and newline before hash",
+					"leading whitespace before hash, document context",
+					"leading space before hash, appended to the document"
+				];
+
+			equal( result.migrate.replace( /^.*\//, "" ), file, "Loaded the shipped " + file );
+			ok( result.migrateLoaded, "jQuery Migrate is active" );
+
+			jQuery.each( parsed, function( name, expected ) {
+				equal( result.parsed[ name ], expected, "HTML still parsed: " + name );
+			});
+
+			jQuery.each( attacks, function( index, name ) {
+				equal( result.attacks[ name ], invalid, "Throw on leading-hash HTML (treated as selector): " + name );
+			});
+
+			ok( result.warnings.indexOf( "HTML string cannot start with a '#' character" ) >= 0, "Leading-hash warning" );
+			ok( result.warnings.indexOf( "$(html) HTML text after last tag is ignored" ) >= 0, "Trailing-text warning" );
+			strictEqual( result.xss, false, "XSS" );
+		}
+	);
+});
+
 test("jQuery.parseJSON", function(){
 	expect( 9 );
 
