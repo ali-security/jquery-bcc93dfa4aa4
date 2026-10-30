@@ -1,0 +1,466 @@
+name: seal-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "QUnit filter (module or test-name substring); empty runs the full suite"
+        required: false
+        default: ""
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # .gitmodules points at dead git:// URLs; materialize the pinned
+      # submodule commits over https instead (dirs exist but are empty).
+      - name: Materialize submodules (sizzle, qunit) at pinned SHAs
+        shell: bash
+        run: |
+          set -euo pipefail
+          materialize() {
+            local url="$1" sha="$2" dest="$3"
+            local tmp
+            tmp="$(mktemp -d)"
+            git -C "$tmp" init -q
+            git -C "$tmp" remote add origin "$url"
+            if ! git -C "$tmp" fetch --depth 1 origin "$sha"; then
+              git -C "$tmp" fetch origin
+            fi
+            if git -C "$tmp" rev-parse --verify -q FETCH_HEAD >/dev/null && \
+               [ "$(git -C "$tmp" rev-parse FETCH_HEAD)" = "$sha" ]; then
+              git -C "$tmp" checkout -q FETCH_HEAD
+            else
+              git -C "$tmp" checkout -q "$sha"
+            fi
+            echo "$dest @ $(git -C "$tmp" rev-parse HEAD)"
+            rm -rf "$tmp/.git"
+            mkdir -p "$dest"
+            cp -a "$tmp/." "$dest/"
+            rm -rf "$tmp"
+          }
+          materialize https://github.com/jquery/sizzle.git c0d9badeb5dac649d0ba7824efaebbe4155369b5 src/sizzle
+          materialize https://github.com/jquery/qunit.git 6ca3721222109997540bd6d9ccd396902e0ad2f9 test/qunit
+          test -f src/sizzle/sizzle.js
+          test -f test/qunit/qunit/qunit.js
+          ls -la src/sizzle test/qunit
+
+      - name: Write container scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/seal"
+          cat > "$RUNNER_TEMP/seal/build.sh" <<'SEAL_BUILD_EOF'
+          set -euo pipefail
+          npm config set registry https://time-machines-npm.sealsecurity.io/
+          npm config set //time-machines-npm.sealsecurity.io/:_authToken 2014-07-17T22:01:17.886000Z
+          # npm 2 only sends the token when always-auth is on
+          npm config set always-auth true
+          node --version
+          npm --version
+          npm install
+          # grunt 0.4 ships no bin; jquery 1.9.1 does not list grunt-cli
+          npm install -g grunt-cli
+          # = `npm test` (grunt default) minus update_submodules, which runs
+          # `git submodule update` against dead git:// URLs; the submodule
+          # content was materialized over https in an earlier step.
+          grunt selector 'build:*:*' jshint uglify 'dist:*'
+          ls -la dist
+          # The repo-root jquery.min.js is packed as-is, and Seal's per-CVE
+          # patch capture excludes *.min.js, so ship the minified file
+          # regenerated from the patched src/ (grunt `dist` already rewrites it
+          # to the release layout). jquery.js / jquery.min.map stay as patched.
+          cp dist/jquery.min.js jquery.min.js
+          # Same for the repo-root jquery-migrate.min.js (no grunt target builds
+          # it here): regenerate it from the patched jquery-migrate.js the way
+          # jquery-migrate's own build does -- src/migratemute.js + the full
+          # file through UglifyJS 2 under the release banner -- with the
+          # uglify-js that grunt-contrib-uglify installs.
+          node <<'SEAL_MIGRATE_MIN_EOF'
+          var fs = require( "fs" ),
+              path = require( "path" ),
+              candidates = [
+                  "node_modules/grunt-contrib-uglify/node_modules/uglify-js",
+                  "node_modules/uglify-js"
+              ],
+              UglifyJS, lines, banner, mapLine, code, i;
+          for ( i = 0; i < candidates.length && !UglifyJS; i++ ) {
+              if ( fs.existsSync( path.resolve( candidates[ i ], "package.json" ) ) ) {
+                  UglifyJS = require( path.resolve( candidates[ i ] ) );
+              }
+          }
+          if ( !UglifyJS ) {
+              throw new Error( "uglify-js not found under node_modules" );
+          }
+          lines = fs.readFileSync( "jquery-migrate.min.js", "utf8" ).split( "\n" );
+          banner = lines[ 0 ];
+          mapLine = lines[ lines.length - 1 ];
+          if ( !/^\/\*! jQuery Migrate v/.test( banner ) ) {
+              throw new Error( "unexpected jquery-migrate.min.js banner: " + banner );
+          }
+          code = UglifyJS.minify( [
+              // jquery-migrate src/migratemute.js: minified build is muted by default
+              "if ( jQuery.migrateMute === undefined ) {\n\tjQuery.migrateMute = true;\n}\n",
+              fs.readFileSync( "jquery-migrate.js", "utf8" )
+          ], { fromString: true } ).code;
+          fs.writeFileSync( "jquery-migrate.min.js", banner + "\n" + code +
+              ( /^\/\/@ sourceMappingURL=/.test( mapLine ) ? "\n" + mapLine : "" ) );
+          console.log( "regenerated jquery-migrate.min.js (" + code.length + " bytes of code)" );
+          SEAL_MIGRATE_MIN_EOF
+          head -c 300 jquery-migrate.min.js; echo
+          # The bundled jQuery 1.8.2 custom build test/data/jquery-1.8.2.ajax_xhr.min.js
+          # ships in the package and has the same jQuery.extend( true, ... )
+          # Object.prototype pollution as src/core.js (CVE-2019-11358). It is
+          # minified, so Seal's per-CVE patch capture drops direct edits; apply the
+          # same `name === "__proto__"` guard here, before the test suite and pack
+          # steps. Idempotent; fails the build unless exactly one guard results.
+          node <<'SEAL_EXTEND_PROTO_EOF'
+          var fs = require( "fs" ),
+              file = "test/data/jquery-1.8.2.ajax_xhr.min.js",
+              vulnerable = "for(n in e){r=u[n],i=e[n];if(u===i)continue;",
+              fixed = "for(n in e){r=u[n],i=e[n];if(n===\"__proto__\"||u===i)continue;",
+              // "binary" round-trips every byte unchanged on node 0.10
+              code = fs.readFileSync( file, "binary" );
+          function count( needle ) {
+              return code.split( needle ).length - 1;
+          }
+          if ( count( vulnerable ) === 1 && count( fixed ) === 0 ) {
+              code = code.replace( vulnerable, fixed );
+              fs.writeFileSync( file, code, "binary" );
+              console.log( "added jQuery.extend __proto__ guard to " + file );
+          }
+          if ( count( vulnerable ) !== 0 || count( fixed ) !== 1 ) {
+              throw new Error( "could not add jQuery.extend __proto__ guard to " + file );
+          }
+          SEAL_EXTEND_PROTO_EOF
+          grep -o 'for(n in e){r=u\[n\],i=e\[n\];if([^)]*)continue;' test/data/jquery-1.8.2.ajax_xhr.min.js
+          # The same bundled 1.8.2 build also rewrites XHTML-style self-closing tags
+          # ( "<div/>" -> "<div></div>" ) in .html() and jQuery.clean() before
+          # innerHTML, the htmlString XSS fixed in src/manipulation.js
+          # (CVE-2020-11022). Drop both replace( dt, "<$1></$2>" ) calls the same way
+          # src/ does (the dt regex stays declared, now unused). Idempotent; fails
+          # the build unless both calls are gone and the code still parses.
+          node <<'SEAL_XHTML_TAG_EOF'
+          var fs = require( "fs" ),
+              file = "test/data/jquery-1.8.2.ajax_xhr.min.js",
+              htmlExpand = "e=e.replace(dt,\"<$1></$2>\");",
+              cleanExpand = "u=u.replace(dt,\"<$1></$2>\"),",
+              htmlFixed = "[1].toLowerCase()]){try{for(;r<i;r++)n=this[r]",
+              cleanFixed = "y.appendChild(c),a=(vt.exec(u)",
+              // "binary" round-trips every byte unchanged on node 0.10
+              code = fs.readFileSync( file, "binary" );
+          function count( needle ) {
+              return code.split( needle ).length - 1;
+          }
+          if ( count( htmlExpand ) === 1 && count( cleanExpand ) === 1 ) {
+              code = code.split( htmlExpand ).join( "" ).split( cleanExpand ).join( "" );
+              fs.writeFileSync( file, code, "binary" );
+              console.log( "removed XHTML-style tag expansion from " + file );
+          }
+          if ( count( ".replace(dt," ) !== 0 || count( htmlFixed ) !== 1 || count( cleanFixed ) !== 1 ) {
+              throw new Error( "could not remove XHTML-style tag expansion from " + file );
+          }
+          // Throws a SyntaxError if the rewrite broke the minified source
+          new Function( code );
+          console.log( "no XHTML-style tag expansion left in " + file );
+          SEAL_XHTML_TAG_EOF
+          # The same bundled 1.8.2 build also wraps <option>/<optgroup> htmlStrings
+          # in a <select multiple='multiple'> wrapper in jQuery.clean(), the
+          # htmlString XSS fixed in src/support.js + src/manipulation.js
+          # (CVE-2020-11023). Apply the same fix: add the support.option probe
+          # (v.support is jQuery.support, t the support object, p its test div)
+          # and only keep the wrapper (Nt is wrapMap) where a bare <option>
+          # cannot be parsed outside a <select> (IE <= 9). Idempotent; fails the
+          # build unless every rewrite is in place and the code still parses.
+          node <<'SEAL_OPTION_WRAP_EOF'
+          var fs = require( "fs" ),
+              file = "test/data/jquery-1.8.2.ajax_xhr.min.js",
+              wrapper = "[1,\"<select multiple='multiple'>\",\"</select>\"]",
+              rewrites = [
+                  [
+                      "t.optDisabled=!o.disabled;try{delete p.test}",
+                      "t.optDisabled=!o.disabled,p.innerHTML=\"<option></option>\",t.option=!!p.lastChild;try{delete p.test}"
+                  ],
+                  [
+                      "Nt={option:" + wrapper + ",legend:",
+                      "Nt={legend:"
+                  ],
+                  [
+                      "Nt.optgroup=Nt.option,Nt.tbody=",
+                      "v.support.option||(Nt.optgroup=Nt.option=" + wrapper + "),Nt.tbody="
+                  ]
+              ],
+              changed = false,
+              i,
+              // "binary" round-trips every byte unchanged on node 0.10
+              code = fs.readFileSync( file, "binary" );
+          function count( needle ) {
+              return code.split( needle ).length - 1;
+          }
+          for ( i = 0; i < rewrites.length; i++ ) {
+              if ( count( rewrites[ i ][ 0 ] ) === 1 && count( rewrites[ i ][ 1 ] ) === 0 ) {
+                  code = code.split( rewrites[ i ][ 0 ] ).join( rewrites[ i ][ 1 ] );
+                  changed = true;
+              }
+              if ( count( rewrites[ i ][ 0 ] ) !== 0 || count( rewrites[ i ][ 1 ] ) !== 1 ) {
+                  throw new Error( "could not apply <option> wrapMap rewrite #" + i + " to " + file );
+              }
+          }
+          if ( count( wrapper ) !== 1 || count( "Nt={option:" ) !== 0 || count( "=Nt.option," ) !== 0 ) {
+              throw new Error( "unexpected <option> wrapMap entries left in " + file );
+          }
+          // Throws a SyntaxError if the rewrite broke the minified source
+          new Function( code );
+          if ( changed ) {
+              fs.writeFileSync( file, code, "binary" );
+              console.log( "made the <option> wrapMap entry IE <= 9 only in " + file );
+          }
+          console.log( "no unconditional <option> wrapMap entry left in " + file );
+          SEAL_OPTION_WRAP_EOF
+          grep -o 'v\.support\.option||([^)]*)' test/data/jquery-1.8.2.ajax_xhr.min.js
+          # The same bundled 1.8.2 build also has jQuery.parseHTML( html ) parse
+          # context-less markup in the live document, so inline event handlers
+          # ( <img src=x onerror=...> ) run while parsing, the XSS fixed in
+          # src/core.js + src/support.js (sonatype-2014-0026). Apply the same fix:
+          # add the support.createHTMLDocument probe (t is the support object, i the
+          # document) and, when parseHTML gets no context, parse into an inert
+          # document.implementation.createHTMLDocument( "" ) document whose <base>
+          # keeps the page URL (gh-2965). jQuery( html ) keeps passing its own
+          # document, as in src/core.js. Idempotent; fails the build unless every
+          # rewrite is in place and the code still parses.
+          node <<'SEAL_PARSE_HTML_EOF'
+          var fs = require( "fs" ),
+              file = "test/data/jquery-1.8.2.ajax_xhr.min.js",
+              rewrites = [
+                  [
+                      "pixelPosition:!1},u.checked=!0,",
+                      "pixelPosition:!1},t.createHTMLDocument=function(){var d;return!i.implementation||!i.implementation.createHTMLDocument?!1:(d=i.implementation.createHTMLDocument(\"\"),d.body.innerHTML=\"<form></form><form></form>\",d.body.childNodes.length===2)}(),u.checked=!0,"
+                  ],
+                  [
+                      "t=t||i,(r=E.exec(e))",
+                      "t||(v.support.createHTMLDocument?(t=i.implementation.createHTMLDocument(\"\"),r=t.createElement(\"base\"),r.href=i.location.href,t.head.appendChild(r)):(t=i)),(r=E.exec(e))"
+                  ]
+              ],
+              changed = false,
+              i,
+              // "binary" round-trips every byte unchanged on node 0.10
+              code = fs.readFileSync( file, "binary" );
+          function count( needle ) {
+              return code.split( needle ).length - 1;
+          }
+          for ( i = 0; i < rewrites.length; i++ ) {
+              if ( count( rewrites[ i ][ 0 ] ) === 1 && count( rewrites[ i ][ 1 ] ) === 0 ) {
+                  code = code.split( rewrites[ i ][ 0 ] ).join( rewrites[ i ][ 1 ] );
+                  changed = true;
+              }
+              if ( count( rewrites[ i ][ 0 ] ) !== 0 || count( rewrites[ i ][ 1 ] ) !== 1 ) {
+                  throw new Error( "could not apply parseHTML createHTMLDocument rewrite #" + i + " to " + file );
+              }
+          }
+          if ( count( "createHTMLDocument" ) !== 5 || count( "t=t||i," ) !== 0 ) {
+              throw new Error( "unexpected jQuery.parseHTML document handling left in " + file );
+          }
+          // Throws a SyntaxError if the rewrite broke the minified source
+          new Function( code );
+          if ( changed ) {
+              fs.writeFileSync( file, code, "binary" );
+              console.log( "made context-less jQuery.parseHTML use an inert document in " + file );
+          }
+          console.log( "context-less jQuery.parseHTML parses into an inert document in " + file );
+          SEAL_PARSE_HTML_EOF
+          grep -o 'parseHTML:function(e,t,n){[^}]*}' test/data/jquery-1.8.2.ajax_xhr.min.js
+          # The same bundled 1.8.2 build also treats any string with a "<" after
+          # leading text ( "a<img src=x onerror=...>" ) as HTML in jQuery( string ),
+          # the XSS fixed in src/core.js (CVE-2012-6708, #11290). Apply the same
+          # strict HTML recognition: drop the [^#<]* prefix from its rquickExpr (w,
+          # the regex jQuery.fn.init falls back to when the string does not start
+          # with "<"), so HTML must start with "<". Idempotent; fails the build
+          # unless the rewrite is in place, init still uses w, and the code parses.
+          node <<'SEAL_QUICK_EXPR_EOF'
+          var fs = require( "fs" ),
+              file = "test/data/jquery-1.8.2.ajax_xhr.min.js",
+              vulnerable = "w=/^(?:[^#<]*(<[\\w\\W]+>)[^>]*$|#([\\w\\-]*)$)/,",
+              fixed = "w=/^(?:(<[\\w\\W]+>)[^>]*$|#([\\w\\-]*)$)/,",
+              init = "e.charAt(0)===\"<\"&&e.charAt(e.length-1)===\">\"&&e.length>=3?s=[null,e,null]:s=w.exec(e);",
+              // "binary" round-trips every byte unchanged on node 0.10
+              code = fs.readFileSync( file, "binary" );
+          function count( needle ) {
+              return code.split( needle ).length - 1;
+          }
+          if ( count( vulnerable ) === 1 && count( fixed ) === 0 ) {
+              code = code.split( vulnerable ).join( fixed );
+              // Throws a SyntaxError if the rewrite broke the minified source
+              new Function( code );
+              fs.writeFileSync( file, code, "binary" );
+              console.log( "made jQuery( html ) require a leading < in " + file );
+          }
+          if ( count( vulnerable ) !== 0 || count( fixed ) !== 1 || count( "[^#<]*" ) !== 0 ||
+                  count( init ) !== 1 || count( "w.exec(" ) !== 1 ) {
+              throw new Error( "could not make jQuery( html ) require a leading < in " + file );
+          }
+          new Function( code );
+          console.log( "jQuery( html ) requires a leading < in " + file );
+          SEAL_QUICK_EXPR_EOF
+          grep -o 'w=/^(?:[^/]*)/,' test/data/jquery-1.8.2.ajax_xhr.min.js
+          # The same bundled 1.8.2 build also strips the scripts out of a
+          # .load( "url selector" ) response with a regex ( $t ) that misses end tags
+          # such as "</script >", so they run when the selected elements are
+          # injected, the XSS fixed in src/ajax.js (CVE-2020-7656). Apply the same
+          # fix: parse the response with jQuery.parseHTML( responseText ) (v is
+          # jQuery, e the responseText, i the selector), which drops every script,
+          # instead of the regex (the $t regex stays declared, now unused).
+          # Idempotent; fails the build unless the rewrite is in place and the code
+          # still parses.
+          node <<'SEAL_LOAD_SCRIPTS_EOF'
+          var fs = require( "fs" ),
+              file = "test/data/jquery-1.8.2.ajax_xhr.min.js",
+              vulnerable = "u.html(i?v(\"<div>\").append(e.replace($t,\"\")).find(i):e)",
+              fixed = "u.html(i?v(\"<div>\").append(v.parseHTML(e)).find(i):e)",
+              // "binary" round-trips every byte unchanged on node 0.10
+              code = fs.readFileSync( file, "binary" );
+          function count( needle ) {
+              return code.split( needle ).length - 1;
+          }
+          if ( count( vulnerable ) === 1 && count( fixed ) === 0 ) {
+              code = code.split( vulnerable ).join( fixed );
+              // Throws a SyntaxError if the rewrite broke the minified source
+              new Function( code );
+              fs.writeFileSync( file, code, "binary" );
+              console.log( "made .load( \"url selector\" ) parse the response without its scripts in " + file );
+          }
+          if ( count( vulnerable ) !== 0 || count( fixed ) !== 1 || count( ".replace($t," ) !== 0 ) {
+              throw new Error( "could not make .load( \"url selector\" ) drop the response scripts in " + file );
+          }
+          new Function( code );
+          console.log( ".load( \"url selector\" ) drops the response scripts in " + file );
+          SEAL_LOAD_SCRIPTS_EOF
+          grep -o 'u\.html(i?v("<div>")[^:]*:e)' test/data/jquery-1.8.2.ajax_xhr.min.js
+          chown -R "$HOST_UID:$HOST_GID" /work
+          SEAL_BUILD_EOF
+          cat > "$RUNNER_TEMP/seal/pack.sh" <<'SEAL_PACK_EOF'
+          set -euo pipefail
+          node --version
+          npm --version
+          # The reference tarball has zero files under either submodule dir.
+          rm -rf node_modules src/sizzle test/qunit
+          mkdir src/sizzle test/qunit
+          rm -rf .github
+          rm -f test/seal-browser-runner.js
+          rm -rf dist src/selector.js
+          chown -R "$HOST_UID:$HOST_GID" /work
+          # npm 2.15.1 ships .gitignore as package/.npmignore (as the reference does)
+          npm pack
+          mkdir -p /work/seal-out
+          mv jquery-1.9.1.tgz /work/seal-out/
+          tar tzf /work/seal-out/jquery-1.9.1.tgz | sort
+          echo "member count: $(tar tzf /work/seal-out/jquery-1.9.1.tgz | wc -l)"
+          chown -R "$HOST_UID:$HOST_GID" /work
+          SEAL_PACK_EOF
+          chmod +x "$RUNNER_TEMP/seal/build.sh" "$RUNNER_TEMP/seal/pack.sh"
+
+      - name: Build (node 0.10 / npm 2, grunt)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -v "$RUNNER_TEMP/seal:/seal" \
+            -w /work \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            node:0.10-wheezy bash /seal/build.sh
+          test -f dist/jquery.js
+          test -f dist/jquery.min.js
+
+      - name: Set up Node 20 (test driver)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install headless browser driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/driver"
+          cd "$RUNNER_TEMP/driver"
+          npm init -y
+          npm install puppeteer-core@22
+
+      - name: Locate Chrome and PHP
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME_PATH="${CHROME_BIN:-$(command -v google-chrome)}"
+          echo "CHROME_PATH=$CHROME_PATH"
+          "$CHROME_PATH" --version
+          php --version
+          echo "CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
+
+      # The project's real QUnit unit suite (upstream ran it in browsers via
+      # TestSwarm), served by PHP for the ajax fixtures, in headless Chrome.
+      - name: Run QUnit test suite (headless Chrome)
+        shell: bash
+        env:
+          SEAL_TEST_FILTER: ${{ inputs.test-filter }}
+          # Environment-dependent in modern headless Chrome (not jQuery bugs):
+          # widows/orphans default is now "2"; Blink snaps offsets to 1/64 px;
+          # Chrome's :lang() no longer matches escaped backslashes.
+          # Each entry is "module: test :: reason"; the runner prints the reason
+          # on every SKIPPED line.
+          SEAL_SKIP_TESTS: >-
+            css: widows & orphans #8936 :: modern Chrome computes the widows/orphans default as 2, not the 2013-era browser default the test expects (browser change, not a jQuery bug)||
+            offset: fractions (see #7730 and #7885) :: Blink now snaps layout offsets to 1/64 px, so the exact fractional offset the test asserts cannot occur in current Chrome||
+            Sizzle: selector: pseudo - :lang :: current Chrome's native :lang() no longer matches the escaped-backslash language values the test asserts
+        run: |
+          set -euo pipefail
+          # Multiple workers are load-bearing: single-process php -S starves
+          # the fixture iframes the suite opens.
+          PHP_CLI_SERVER_WORKERS=10 php -S 127.0.0.1:8000 -t . > "$RUNNER_TEMP/php.log" 2>&1 &
+          PHP_PID=$!
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/test/index.html > /dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "PHP server did not come up"
+            cat "$RUNNER_TEMP/php.log"
+            exit 1
+          fi
+          status=0
+          NODE_PATH="$RUNNER_TEMP/driver/node_modules" \
+            node test/seal-browser-runner.js "http://127.0.0.1:8000/test/index.html?dev" \
+            || status=$?
+          if kill -0 "$PHP_PID" 2>/dev/null; then
+            kill "$PHP_PID"
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "--- php.log (tail) ---"
+            tail -n 100 "$RUNNER_TEMP/php.log"
+          fi
+          exit "$status"
+
+      - name: Pack (node 0.10 / npm 2)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -v "$RUNNER_TEMP/seal:/seal" \
+            -w /work \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            node:0.10-wheezy bash /seal/pack.sh
+          ls -la seal-out
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jquery-npm
+          path: seal-out/jquery-1.9.1.tgz
+          if-no-files-found: error
