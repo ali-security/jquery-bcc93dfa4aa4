@@ -91,6 +91,7 @@ testIframeWithCallback( "box-sizing does not affect jQuery.support.shrinkWrapBlo
 			"reliableHiddenOffsets":true,
 			"ajax":true,
 			"cors":true,
+			"createHTMLDocument":true,
 			"doesNotIncludeMarginInBodyOffset":true,
 			"clearCloneStyle": true
 		};
@@ -126,6 +127,7 @@ testIframeWithCallback( "box-sizing does not affect jQuery.support.shrinkWrapBlo
 			"reliableHiddenOffsets":true,
 			"ajax":true,
 			"cors":true,
+			"createHTMLDocument":true,
 			"doesNotIncludeMarginInBodyOffset":true,
 			"clearCloneStyle": true
 		};
@@ -161,6 +163,7 @@ testIframeWithCallback( "box-sizing does not affect jQuery.support.shrinkWrapBlo
 			"reliableHiddenOffsets":true,
 			"ajax":true,
 			"cors":true,
+			"createHTMLDocument":true,
 			"doesNotIncludeMarginInBodyOffset":true,
 			"clearCloneStyle": false
 		};
@@ -196,6 +199,7 @@ testIframeWithCallback( "box-sizing does not affect jQuery.support.shrinkWrapBlo
 			"reliableHiddenOffsets":true,
 			"ajax":true,
 			"cors":false,
+			"createHTMLDocument":true,
 			"doesNotIncludeMarginInBodyOffset":true,
 			"clearCloneStyle": false
 		};
@@ -231,6 +235,7 @@ testIframeWithCallback( "box-sizing does not affect jQuery.support.shrinkWrapBlo
 			"reliableHiddenOffsets":false,
 			"ajax":true,
 			"cors":false,
+			"createHTMLDocument":false,
 			"doesNotIncludeMarginInBodyOffset":true,
 			"clearCloneStyle": true
 		};
@@ -243,6 +248,7 @@ testIframeWithCallback( "box-sizing does not affect jQuery.support.shrinkWrapBlo
 			"checkClone": false,
 			"checkOn": true,
 			"cors": false,
+			"createHTMLDocument": false,
 			"cssFloat": false,
 			"deleteExpando": false,
 			"doesNotIncludeMarginInBodyOffset": true,
@@ -301,6 +307,7 @@ testIframeWithCallback( "box-sizing does not affect jQuery.support.shrinkWrapBlo
 			"reliableHiddenOffsets":false,
 			"ajax":true,
 			"cors":false,
+			"createHTMLDocument":false,
 			"doesNotIncludeMarginInBodyOffset":true,
 			"clearCloneStyle": true
 		};
@@ -336,6 +343,7 @@ testIframeWithCallback( "box-sizing does not affect jQuery.support.shrinkWrapBlo
 			"reliableHiddenOffsets":true,
 			"ajax":true,
 			"cors":true,
+			"createHTMLDocument":true,
 			"doesNotIncludeMarginInBodyOffset":true,
 			"clearCloneStyle": true
 		};
@@ -371,6 +379,7 @@ testIframeWithCallback( "box-sizing does not affect jQuery.support.shrinkWrapBlo
 			"reliableHiddenOffsets":true,
 			"ajax":true,
 			"cors":true,
+			"createHTMLDocument":true,
 			"doesNotIncludeMarginInBodyOffset":true,
 			"clearCloneStyle": true
 		};
@@ -378,7 +387,7 @@ testIframeWithCallback( "box-sizing does not affect jQuery.support.shrinkWrapBlo
 
 	if ( expected ) {
 		test("Verify that the support tests resolve as expected per browser", function() {
-			expect( 32 );
+			expect( 33 );
 
 			for ( var i in expected ) {
 				if ( jQuery.ajax || i !== "ajax" && i !== "cors" ) {
