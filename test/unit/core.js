@@ -1460,3 +1460,33 @@ test("jQuery.camelCase()", function() {
 		equal( jQuery.camelCase( key ), val, "Converts: " + key + " => " + val );
 	});
 });
+
+// The bundled jQuery copies shipped in the package must only treat a string as
+// HTML when it starts with a tag; text before the first "<" (e.g. "a<img ...>"
+// or "#id <img ...>") makes it a selector, as in src/core.js (CVE-2012-6708, #11290)
+testIframeWithCallback( "jQuery( string ) only parses strings starting with a tag as HTML - bundled jQuery 1.4.2 (speed/jquery-basis.js), 1.8.2 (data/jquery-1.8.2.ajax_xhr.min.js) and dist/jquery.min.js (CVE-2012-6708, sonatype-2012-0009)", "core/quickExprBundled.html", function( basis, ajaxXhr, main ) {
+	expect( 27 );
+
+	jQuery.each( [
+		[ basis, "1.4.2", "speed/jquery-basis.js" ],
+		[ ajaxXhr, "1.8.2", "data/jquery-1.8.2.ajax_xhr.min.js" ],
+		[ main, "1.9.1", "dist/jquery.min.js" ]
+	], function( i, copy ) {
+		var result = copy[ 0 ],
+			version = copy[ 1 ],
+			outcomes = jQuery.map( result.outcomes, function( outcome, name ) {
+				return name + " => " + outcome;
+			}).join( "; " );
+
+		// The 1.8.2 version string includes its module list
+		strictEqual( result.version.split( " " )[ 0 ], version, copy[ 2 ] + " is jQuery " + version );
+		deepEqual( result.parsedAsHtml, [], version + ": no string with text before its first tag was parsed as HTML (" + outcomes + ")" );
+		deepEqual( result.executed, [], version + ": no inline event handler ran" );
+		strictEqual( result.inserted, 0, version + ": nothing was inserted into the document" );
+		strictEqual( result.control, "1:img", version + ": the same markup starting with a tag is still parsed as HTML (control)" );
+		strictEqual( result.controlFired, true, version + ": and its inline event handler does run in this browser (control)" );
+		strictEqual( result.singleTag, "1:div", version + ": jQuery( \"<div/>\" ) still makes a div" );
+		strictEqual( result.trailingText, "1:p", version + ": text after the last tag is still ignored" );
+		strictEqual( result.idSelector, "1:quick-target", version + ": #id strings are still id selectors" );
+	});
+});

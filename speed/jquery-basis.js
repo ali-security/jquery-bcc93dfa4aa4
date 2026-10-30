@@ -35,7 +35,8 @@ var jQuery = function( selector, context ) {
 
 	// A simple way to check for HTML strings or ID strings
 	// (both of which we optimize for)
-	quickExpr = /^[^<]*(<[\w\W]+>)[^>]*$|^#([\w-]+)$/,
+	// Strict HTML recognition (#11290: must start with <)
+	quickExpr = /^(<[\w\W]+>)[^>]*$|^#([\w-]+)$/,
 
 	// Is it a simple selector
 	isSimple = /^.[^:#\[\.,]*$/,
