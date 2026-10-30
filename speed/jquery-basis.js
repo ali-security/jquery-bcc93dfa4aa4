@@ -5055,6 +5055,10 @@ jQuery.extend({
 		var parts = rurl.exec( s.url ),
 			remote = parts && (parts[1] && parts[1] !== location.protocol || parts[2] !== location.host);
 
+		// Flag cross-domain requests so that httpData does not auto-execute
+		// their responses when no explicit dataType was provided (See gh-2432)
+		s.crossDomain = !!(s.crossDomain || remote);
+
 		// If we're requesting a remote document
 		// and trying to load JSON or Script with a GET
 		if ( s.dataType === "script" && type === "GET" && remote ) {
@@ -5363,7 +5367,8 @@ jQuery.extend({
 				data = jQuery.parseJSON( data );
 
 			// If the type is "script", eval it in global context
-			} else if ( type === "script" || !type && ct.indexOf("javascript") >= 0 ) {
+			// Prevent auto-execution of scripts when no explicit dataType was provided (See gh-2432)
+			} else if ( type === "script" || !type && ct.indexOf("javascript") >= 0 && !(s && s.crossDomain) ) {
 				jQuery.globalEval( data );
 			}
 		}

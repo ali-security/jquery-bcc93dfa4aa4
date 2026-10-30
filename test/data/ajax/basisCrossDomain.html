@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<title>Bundled jQuery 1.4.2 (speed/jquery-basis.js) does not execute cross-domain js (gh-2432)</title>
+	<script src="../../../speed/jquery-basis.js"></script>
+</head>
+<body>
+	<script>
+		// Fake transport answering every request with a text/javascript response,
+		// so no real (cross-domain) server is needed
+		jQuery.ajaxSetup({
+			async: false,
+			global: false,
+			xhr: function() {
+				var xhr = {
+					readyState: 0,
+					status: 0,
+					responseText: "",
+					open: function() {},
+					setRequestHeader: function() {},
+					abort: function() {},
+					getResponseHeader: function( name ) {
+						return name.toLowerCase() === "content-type" ? "text/javascript" : null;
+					},
+					send: function() {
+						xhr.readyState = 4;
+						xhr.status = 200;
+						xhr.responseText = "window.basisScriptExecuted = true;";
+					}
+				};
+				return xhr;
+			}
+		});
+
+		function executes( request ) {
+			window.basisScriptExecuted = false;
+			request();
+			return window.basisScriptExecuted;
+		}
+
+		window.parent.iframeCallback( jQuery.fn.jquery, {
+			crossDomain: executes(function() {
+				jQuery.ajax({ url: "http://example.invalid/script.js" });
+			}),
+			crossDomainProtocolLess: executes(function() {
+				jQuery.ajax({ url: "//example.invalid/script.js" });
+			}),
+			crossDomainGet: executes(function() {
+				jQuery.get( "http://example.invalid/script.js" );
+			}),
+			crossDomainPost: executes(function() {
+				jQuery.post( "http://example.invalid/script.js" );
+			}),
+			crossDomainOption: executes(function() {
+				jQuery.ajax({ url: "script.js", crossDomain: true });
+			}),
+			crossDomainDataTypeScript: executes(function() {
+				jQuery.ajax({ url: "http://example.invalid/script.js", type: "POST", dataType: "script" });
+			}),
+			sameDomain: executes(function() {
+				jQuery.ajax({ url: "script.js" });
+			}),
+			sameDomainAbsolute: executes(function() {
+				jQuery.ajax({ url: location.protocol + "//" + location.host + "/script.js" });
+			})
+		});
+	</script>
+</body>
+</html>
